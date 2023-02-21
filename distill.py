@@ -367,14 +367,6 @@ if __name__ == "__main__":
             xs = torch.cat(xs, axis=0)
             xs = xs.view(xs.shape[0] * xs.shape[1] * xs.shape[2], 3)
             probs = probs.view(probs.shape[0] * probs.shape[1] * probs.shape[2], 1)
-            torch.save({'probs': probs, 'xs': xs, 'sigmas': sigmas}, data_path)
-    elif args.step == 1:
-        print("Gathering dataset...")
-        with torch.no_grad():
-            data = torch.load(data_path)
-            probs = data['probs']
-            xs = data['xs']
-            sigmas = data['sigmas']
             ones = xs[(probs > torch.quantile(probs, 0.97)).repeat(1, 3)].reshape(-1, 3)  # balance 0-1 classes
             for s in [0.001, 0.01]:  # add new data points near ones
                 for i in trange(balancing_iters):
