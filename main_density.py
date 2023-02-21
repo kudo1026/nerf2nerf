@@ -128,7 +128,7 @@ if __name__ == "__main__":
         sigmas_f = torch.tensor([[sigma_l, sigma_l, sigma_l]]).float().to(opt.device)
 
         samples = np.concatenate(
-            (As[:, :, 0].clone().detach().numpy(), uu.aux_initial_samples(As, wrapper1, sigmas, rho)))
+            (As[:, :, 0].clone().detach().numpy(), uu.aux_initial_samples(As, wrapper1, sigmas, rho)))  # TODO: still using surface field to draw aux samples
 
         if opt.use_vis:
             uu.visualize_points(torch.cat([torch.tensor(samples), As[0].T], axis=0), vis,
@@ -139,8 +139,8 @@ if __name__ == "__main__":
         As = As.view(As.shape[0], 3).detach().clone().float().to(opt.device)
         Bs = Bs.view(Bs.shape[0], 3).detach().clone().float().to(opt.device)
 
-        # fixed_surface_values = wrapper1.get_surface_value(X, sigmas)
-        # fixed_surface_values = fixed_surface_values.detach().clone()
+        fixed_surface_values = wrapper1.get_surface_value(X, sigmas)
+        fixed_surface_values = fixed_surface_values.detach().clone()
         fixed_density_values = wrapper1.query_density(X.squeeze(0)).unsqueeze(0)
         fixed_density_values = fixed_density_values.detach().clone()
 
@@ -182,16 +182,17 @@ if __name__ == "__main__":
             R = uu.make_rot_matrix(thetac, alphac, gammac)
             if time % opt.show_freq == 0 and time > 0:
                 uu.save_transform(R, t, root)
-                uu.show(writer, R, t, wrapper1, wrapper2, s1, focal, X, As, time, scale=opt.scale,
-                        image_size=opt.image_size, near=opt.near, far=opt.far, chunk=opt.chunk)
+                # uu.show(writer, R, t, wrapper1, wrapper2, s1, focal, X, As, time, scale=opt.scale,
+                #         image_size=opt.image_size, near=opt.near, far=opt.far, chunk=opt.chunk)
             W = torch.matmul((opt.scale) * X, R.transpose(0, 1)) + t
-            # moving_surface_values = wrapper2.get_surface_value(W, (opt.scale) * sigmas)
+            moving_surface_values = wrapper2.get_surface_value(W, (opt.scale) * sigmas)
             # print('moving_surface_values shape: ', moving_surface_values.shape) # [1, N]
             # print('w shape: ', W.shape) # [1. N, 3]
-            moving_density_values = wrapper1.query_density(W.squeeze(0)).unsqueeze(0)
+            moving_density_values = wrapper2.query_density(W.squeeze(0)).unsqueeze(0)
 
             # delta = torch.abs(moving_surface_values - fixed_surface_values)
             delta = torch.abs(moving_density_values - fixed_density_values)
+            # delta = torch.abs(torch.exp(-moving_density_values) - torch.exp(-fixed_density_values))
             delta = delta.transpose(0, 1).float()
             loss1 = torch.mean(adaptive.lossfun(delta)) # matching energy
             loss2 = torch.mean((torch.matmul(opt.scale * As, R.transpose(0, 1)) + t - Bs) ** 2) # keypoint energy
@@ -206,7 +207,7 @@ if __name__ == "__main__":
                 c = adaptive.scale()[0].clone().detach().cpu().numpy()
                 w2 = 0.5 * (1 + np.cos(time * np.pi / opt.iters))  # Trigonometric additive cooling
                 sigmas = sigmas_f + 0.5 * (sigmas_i - sigmas_f) * (1 + np.cos(time * np.pi / opt.iters))
-                X = uu.draw_new_samples(X, rho, R, t, wrapper1, wrapper2, c, sigmas, opt.obj_bigness)
+                X = uu.draw_new_samples(X, rho, R, t, wrapper1, wrapper2, c, sigmas, opt.obj_bigness)   # TODO: still using surface field to draw new samples
                 if opt.use_vis:
                     uu.visualize_points(torch.cat([X[0].clone().detach() * opt.scale, As * opt.scale], axis=0), vis,
                                         'samples', snum=len(As)
@@ -217,8 +218,8 @@ if __name__ == "__main__":
                         vis, 'keys', snum=len(list(Bs)) + 1, title='Key Points')
 
                 W = torch.matmul((opt.scale) * X.detach().clone().float().to(opt.device), R.transpose(0, 1)) + t
-                # fixed_surface_values = wrapper1.get_surface_value(X, sigmas)
-                # fixed_surface_values = fixed_surface_values.detach().clone()
+                fixed_surface_values = wrapper1.get_surface_value(X, sigmas)
+                fixed_surface_values = fixed_surface_values.detach().clone()
                 # print('fixed_surface_values shape: ', fixed_surface_values.shape) # [1, N]
                 fixed_density_values = wrapper1.query_density(X.squeeze(0)).unsqueeze(0)
                 fixed_density_values = fixed_density_values.detach().clone()

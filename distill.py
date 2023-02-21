@@ -1,19 +1,21 @@
 import argparse
-import json
 import io
-import PIL.Image
-from torchvision.transforms import ToTensor
-import torch
-import numpy as np
-from torch.utils.tensorboard import SummaryWriter
-from torch.nn import Sigmoid, ReLU
-from torch.nn import Module
-from torch.nn import MSELoss
-from torch.nn import Linear
-from torch.optim import Adam
-import matplotlib.pyplot as plt
-import utils as uu
+import json
 import os
+
+import matplotlib.pyplot as plt
+import numpy as np
+import PIL.Image
+import torch
+from nerfstudio.data.scene_box import SceneBox
+from torch.nn import Linear, Module, MSELoss, ReLU, Sigmoid
+from torch.optim import Adam
+from torch.utils.tensorboard import SummaryWriter
+from torchvision.transforms import ToTensor
+from tqdm import trange
+
+import utils as uu
+from my_models import MyNerfactoModelConfig
 
 
 def get_focal(file, resolution=(512, 512)):
@@ -26,8 +28,15 @@ def get_focal(file, resolution=(512, 512)):
 
 
 class Teacher():
-    def __init__(self, path, device=torch.device("cuda")):
-        self.nerf = torch.jit.load(path).to(device)
+    def __init__(self, path, model_type='jit', device=torch.device("cuda")):
+        if model_type == 'jit':
+            self.nerf = torch.jit.load(path).to(device)
+        else:
+            state = torch.load(path, map_location=device)
+            state = {key[7:]: val for key, val in state['pipeline'].items() if key.startswith('_model')}
+            self.nerf = MyNerfactoModelConfig(eval_num_rays_per_chunk=1 << 15).setup(scene_box=SceneBox(aabb=state['field.aabb']), num_train_data=len(state['field.embedding_appearance.embedding.weight'])).to(device)
+            self.nerf.load_state_dict(state)
+            self.nerf.eval()
 
     def get_prob(self,
                  extrinsics,
@@ -70,7 +79,7 @@ class Teacher():
             depth_samples = ((level - centers[:, :, 2]) / ray_dirs[:, :, 2])
             depth_samples = depth_samples.unsqueeze(-1).unsqueeze(-1)  # [B,HW,N=1,1]
             points_3D_samples_orig = (
-                    centers[:, :, None] + ray_dirs[:, :, None] * depth_samples).clone().detach().cpu()  # [B,HW,N,3]
+                centers[:, :, None] + ray_dirs[:, :, None] * depth_samples).clone().detach().cpu()  # [B,HW,N,3]
         else:
             points_3D_samples_orig = s_points[:, :, None].clone().detach().cpu()  # [B,M,N,3]
 
@@ -137,6 +146,7 @@ class Teacher():
     def get_transmittance_and_opacity(self, delta, pcameras, ppoints, ppoints_shape):
         prays = ppoints - pcameras
         prays /= torch.linalg.norm(prays, axis=-1, keepdims=True)
+        # prays is not used internally
         density_sample = self.nerf.call_eval(ppoints, prays)[1].unsqueeze(-1).clone().detach().cpu()
         density_sample = density_sample.reshape(ppoints_shape[0], ppoints_shape[1], ppoints_shape[2],
                                                 1)
@@ -270,7 +280,7 @@ def show_pred_image(sig, level, top_view, focal, L, model):
     buf.seek(0)
     plt.savefig(os.path.join(path, "predicted.png"))
     plt.show()
-    f.clear()
+    # f.clear()
     plt.close(f)
     image = PIL.Image.open(buf)
     image = ToTensor()(image)
@@ -291,7 +301,7 @@ def show_gt_image(sig, teacher_net, level, cameras):
     buf.seek(0)
     plt.savefig(os.path.join(root, "distill_output", "gt.png"))
     plt.show()
-    f.clear()
+    # f.clear()
     plt.close(f)
     image = PIL.Image.open(buf)
     image = ToTensor()(image)
@@ -300,10 +310,11 @@ def show_gt_image(sig, teacher_net, level, cameras):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('-sn', '--scene_no', type=int)
-    parser.add_argument('-ab', '--a_or_b')
+    parser.add_argument('-sn', '--scene_no', type=int, default=0)
+    parser.add_argument('-ab', '--a_or_b', default='a')
+    parser.add_argument('-s', '--step', type=int, default=1)
     args = parser.parse_args()
-    real = True if args.scene_no == 4 or args.scene_no == 5 else False
+    real = args.scene_no not in [1, 2, 3, 6]
 
     root = os.path.join(os.getcwd(), "scenes", "scene_" + str(args.scene_no))
     focal = get_focal(os.path.join(root, "transforms.json"))
@@ -311,7 +322,8 @@ if __name__ == "__main__":
 
     path = os.path.join(root, args.a_or_b, 'nerf_model_' + args.a_or_b + '.pt')
     device = torch.device("cuda")
-    teacher_net = Teacher(path)
+    model_type = 'jit' if 1 <= args.scene_no <= 6 else 'nerfstudio'
+    teacher_net = Teacher(path, model_type)
     L = 7
     sigma_levels = [[0.0, 0.0, 0.0], [0.004, 0.004, 0.004], [0.008, 0.008, 0.008]]
     probs, xs, sigmas = [], [], []
@@ -334,73 +346,90 @@ if __name__ == "__main__":
     elif args.scene_no == 5:
         bounds_shift = torch.tensor([0.5, 0.5, -1.83])
         bounds_range = torch.tensor([1.2, 1.2, 0.3])
+    else:
+        bounds_shift = torch.tensor([0.5, 0.5, 0.5])
+        bounds_range = torch.tensor([2.0, 2.0, 2.0])
 
-    for i in range(iters):
-        print("Gathering dataset...iteration:", i + 1, "/", iters)
-        s_points = ((torch.rand((1, 10 ** 5, 3)) - bounds_shift) * bounds_range).to(
-            device)
-        for sigma in sigma_levels:
-            prob, x = teacher_net.get_prob(top_view, focal, None, torch.tensor(sigma), cameras, s_points=s_points)
-            probs += [prob]
-            xs += [x]
-            sigmas += [sigma] * prob.shape[1]
+    data_path = os.path.join(root, args.a_or_b, 'data.pt')
+    if args.step == 0:
+        print("Gathering dataset...")
+        with torch.no_grad():
+            for i in trange(iters):
+                s_points = ((torch.rand((1, 10 ** 5, 3)) - bounds_shift) * bounds_range).to(
+                    device)
+                for sigma in sigma_levels:
+                    prob, x = teacher_net.get_prob(top_view, focal, None, torch.tensor(sigma), cameras, s_points=s_points)
+                    probs += [prob]
+                    xs += [x]
+                    sigmas += [sigma] * prob.shape[1]
 
-    probs = torch.cat(probs, axis=0)
-    xs = torch.cat(xs, axis=0)
-    xs = xs.view(xs.shape[0] * xs.shape[1] * xs.shape[2], 3)
-    probs = probs.view(probs.shape[0] * probs.shape[1] * probs.shape[2], 1)
+            probs = torch.cat(probs, axis=0)
+            xs = torch.cat(xs, axis=0)
+            xs = xs.view(xs.shape[0] * xs.shape[1] * xs.shape[2], 3)
+            probs = probs.view(probs.shape[0] * probs.shape[1] * probs.shape[2], 1)
+            torch.save({'probs': probs, 'xs': xs, 'sigmas': sigmas}, data_path)
+    elif args.step == 1:
+        print("Gathering dataset...")
+        with torch.no_grad():
+            data = torch.load(data_path)
+            probs = data['probs']
+            xs = data['xs']
+            sigmas = data['sigmas']
+            ones = xs[(probs > torch.quantile(probs, 0.97)).repeat(1, 3)].reshape(-1, 3)  # balance 0-1 classes
+            for s in [0.001, 0.01]:  # add new data points near ones
+                for i in trange(balancing_iters):
+                    x_new = (ones + torch.normal(0, s, size=ones.size())).unsqueeze(0)
+                    for sigma in sigma_levels:
+                        prob, x = teacher_net.get_prob(top_view, focal, None, torch.tensor(sigma), cameras, s_points=x_new)
+                        prob = prob.view(prob.shape[0] * prob.shape[1] * prob.shape[2], 1)
+                        x = x.view(x.shape[0] * x.shape[1] * x.shape[2], 3)
+                        xs = torch.cat((xs, x), axis=0)
+                        probs = torch.cat((probs, prob), axis=0)
+                        sigmas += [sigma] * prob.shape[0]
+            probs = probs.detach().clone().float().to(device)
+            xs = xs.detach().clone().float().cpu()
+            idx = torch.randperm(probs.shape[0])
+            probs = probs[idx]
+            xs = xs[idx]
+            sigmas = torch.tensor(sigmas).float().cpu()
+            sigmas = sigmas[idx]
+            torch.save({'probs': probs, 'xs': xs, 'sigmas': sigmas}, data_path)
+        print("Data collection finished.")
+    else:
+        data = torch.load(data_path)
+        probs = data['probs']
+        xs = data['xs']
+        sigmas = data['sigmas']
+        model = Distilled_MLP(6 * L + 3).to(device)
+        model.scale = 1
+        xs_enc = model.integrated_positional_encoding(xs, L, sigmas).to(device)
+        sigmas = sigmas.to(device)
 
-    ones = xs[(probs > torch.quantile(probs, 0.97)).repeat(1, 3)].reshape(-1, 3)  # balance 0-1 classes
+        writer = SummaryWriter(comment='views')
+        epochs = 60
+        batch_size = 2048
+        iters = xs.shape[0] // batch_size
 
-    for s in [0.001, 0.01]:  # add new data points near ones
-        for i in range(balancing_iters):
-            x_new = (ones + torch.normal(0, s, size=ones.size())).unsqueeze(0)
-            for sigma in sigma_levels:
-                prob, x = teacher_net.get_prob(top_view, focal, None, torch.tensor(sigma), cameras, s_points=x_new)
-                prob = prob.view(prob.shape[0] * prob.shape[1] * prob.shape[2], 1)
-                x = x.view(x.shape[0] * x.shape[1] * x.shape[2], 3)
-                xs = torch.cat((xs, x), axis=0)
-                probs = torch.cat((probs, prob), axis=0)
-                sigmas += [sigma] * prob.shape[0]
-    probs = probs.detach().clone().float().to(device)
-    xs = xs.detach().clone().float().cpu()
-    idx = torch.randperm(probs.shape[0])
-    probs = probs[idx]
-    xs = xs[idx]
-    sigmas = torch.tensor(sigmas).float().cpu()
-    sigmas = sigmas[idx]
-    print("Data collection finished.")
+        optimizer = Adam(model.parameters(), lr=1e-3)
+        criterion = MSELoss()
+        ep = 1e-10
+        save_after = 10
+        level = 0.37  # horizontal cut z-value to show, might need to move up or down for different scenes to catch a good cut
 
-    model = Distilled_MLP(6 * L + 3).to(device)
-    model.scale = 1
-    xs_enc = model.integrated_positional_encoding(xs, L, sigmas).to(device)
-    sigmas = sigmas.to(device)
+        for i in range(epochs):
+            for j in range(iters):
+                x_i = xs_enc[j * batch_size: (j + 1) * batch_size]
+                probs_i = probs[j * batch_size: (j + 1) * batch_size].flatten()
+                probs_hat = model(x_i)
+                loss = torch.mean(probs_hat.flatten() - probs_i * torch.log(probs_hat.flatten() + ep))
+                loss.backward()
+                optimizer.step()
+                optimizer.zero_grad()
+            print("loss:", i, loss)
+            if i % save_after == 0:
+                torch.save(model.state_dict(), os.path.join(root, args.a_or_b, "distilled_" + args.a_or_b + ".ckpt"))
 
-    writer = SummaryWriter(comment='views')
-    epochs = 60
-    batch_size = 2048
-    iters = xs.shape[0] // batch_size
-
-    optimizer = Adam(model.parameters(), lr=1e-3)
-    criterion = MSELoss()
-    ep = 1e-10
-    save_after = 10
-    level = 0.37  # horizontal cut z-value to show, might need to move up or down for different scenes to catch a good cut
-
-    for i in range(epochs):
-        for j in range(iters):
-            x_i = xs_enc[j * batch_size: (j + 1) * batch_size]
-            probs_i = probs[j * batch_size: (j + 1) * batch_size].flatten()
-            probs_hat = model(x_i)
-            loss = torch.mean(probs_hat.flatten() - probs_i * torch.log(probs_hat.flatten() + ep))
-            loss.backward()
-            optimizer.step()
-            optimizer.zero_grad()
-        print("loss:", i, loss)
-        if i % save_after == 0:
-            torch.save(model.state_dict(), os.path.join(root, args.a_or_b, "distilled_" + args.a_or_b + "_7.ckpt"))
-
-            # adjust sigma and level
-            show_pred_image(torch.tensor([[0.0, 0.0, 0.0]]).float().to(device), level, top_view, focal, L, model)
-            if i == 0:
-                show_gt_image(torch.tensor([[0.0, 0.0, 0.0]]).float().to(device), teacher_net, level, cameras)
+                # adjust sigma and level
+                show_pred_image(torch.tensor([[0.0, 0.0, 0.0]]).float().to(device), level, top_view, focal, L, model)
+                if i == 0:
+                    show_gt_image(torch.tensor([[0.0, 0.0, 0.0]]).float().to(device), teacher_net, level, cameras)

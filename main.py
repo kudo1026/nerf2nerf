@@ -1,19 +1,21 @@
-import torch
-from nerf_wrapper import NeRFWrapper
-import utils as uu
-import numpy as np
-import torch.nn as nn
-import robust_loss_pytorch.general
-import visdom
+import argparse
 import json
 import os
+
+import numpy as np
+import robust_loss_pytorch.general
+import torch
+import torch.nn as nn
+import visdom
 import yaml
-import argparse
 from torch.utils.tensorboard import SummaryWriter
+
+import utils as uu
+from nerf_wrapper import NeRFWrapper
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('-y', '--yaml', required=True)
+    parser.add_argument('-y', '--yaml', default='table_no_vis')
     args = parser.parse_args()
     with open(os.path.join(os.getcwd(), 'options', args.yaml + ".yaml"), "r") as f:
         opt = uu.AttributeDict(yaml.load(f, Loader=yaml.FullLoader))
@@ -21,7 +23,7 @@ if __name__ == "__main__":
     np.random.seed(seed=10)
     root = os.path.join(os.getcwd(), "scenes", "scene_" + str(opt.scene_no))
     writer = SummaryWriter(comment='views')
-    kp_iters = 2000 if not opt.real else 4000
+    kp_iters = 4000 if opt.real else 2000
     vis = None
     if opt.use_vis:
         is_open = uu.check_socket_open('localhost', opt.vis_port)
@@ -35,16 +37,21 @@ if __name__ == "__main__":
                 break
         vis = visdom.Visdom(server='localhost', port=opt.vis_port, env='Reg')
 
+    model_type = 'jit' if 1 <= opt.scene_no <= 6 else 'nerfstudio'
     with torch.cuda.device(opt.device):
         wrapper1 = NeRFWrapper(os.path.join(root, 'a', 'nerf_model_a.pt'),
-                               os.path.join(root, 'a', 'distilled_a_1.ckpt'))
+                               os.path.join(root, 'a', 'distilled_a.ckpt'), model_type)
 
         wrapper2 = NeRFWrapper(os.path.join(root, 'b', 'nerf_model_b.pt'),
-                               os.path.join(root, 'b', 'distilled_b_1.ckpt'))
+                               os.path.join(root, 'b', 'distilled_b.ckpt'), model_type)
 
+        # camera_angle_x in json is fov_x
+        # poses are stored in json as 4x4 c2w of spec x->right, y->up, z->back (so called "raw pose")
+        # loaded poses are 3x4 c2w of spec x->right, y->down, z->front
         focal, poses = uu.load_poses(os.path.join(root, 'transforms.json'), opt.image_size)
         sample_ext = poses[0]
         p1 = torch.concat((sample_ext, torch.tensor([[0, 0, 0.0, 1]]).to(sample_ext.device)), axis=0)
+        # s1 in 4x4 c2w; x--right, y--down, z--forward
         s1 = uu.make_random_extrinsic(sample_ext, r_scale=opt.r_scale, z_offset=opt.z_offset,
                                       phi_low=opt.phi_low).unsqueeze(0).to(
             opt.device).float()
@@ -74,24 +81,28 @@ if __name__ == "__main__":
             exit(0)
 
         # get ground truth poses and gt object point cloud model if available (synth)
-        if not opt.real:
+        try:
             with open(os.path.join(root, "gt_transform.json")) as file:
                 gt_poses = json.load(file)
 
-            with open(os.path.join(root, "object_point_clouds", opt.object_name + ".json")) as file:
-                obj_pc = np.array(json.load(file))
+            # defined in world?
+            # with open(os.path.join(root, "object_point_clouds", opt.object_name + ".json")) as file:
+            #     obj_pc = np.array(json.load(file))
 
+            # model to A
             A = np.array(gt_poses[opt.object_name]['scene_a'])
+            # model to B
             B = gt_poses[opt.object_name]['scene_b']
             T_gt = B @ np.linalg.inv(A)
-            euler_gt = uu.get_Euler(T_gt[:3, :3]) * 180 / np.pi
-            trans_gt = T_gt[:3, 3]
-        else:
+            G_gt, _ = uu.decompose_sim3(T_gt)
+            # euler angles in extrinsic xyz format
+            euler_gt = uu.get_Euler(G_gt[:3, :3]) * 180 / np.pi
+            trans_gt = G_gt[:3, 3]
+        except:
             T_gt = None
             euler_gt = None
             trans_gt = None
             obj_pc = None
-
         try:
             k = uu.load_keypoints(os.path.join(root, opt.object_name + "_keypoints.json"))
         except:
@@ -110,14 +121,18 @@ if __name__ == "__main__":
 
             print("Please fill keypoints file.")
             exit(0)
-
+        # Each experiment focuses on one object, which appears in 2 layouts (A and B). For each layout, #imgs images are captured.
+        # As_2d of #imgs*#kps*2 stores the #kps keypoints in x-y pixel coordinates for each image.
+        # A_exts of #imgs*1*4*4 stores the 1*4*4 c2w pose matrices of spec x->right, y->down, z->front for each image.
         As_2d, Bs_2d, A_exts, B_exts = k[0], k[1], k[2], k[3]
         As = uu.triangulate(As_2d[0], As_2d[1], A_exts[0], A_exts[1], focal, image_size=opt.image_size)
         Bs = uu.triangulate(Bs_2d[0], Bs_2d[1], B_exts[0], B_exts[1], focal, image_size=opt.image_size)
 
+        # not used
         obj_diameter = np.linalg.norm(
             np.max(As.detach().clone().cpu().numpy(), axis=0) - np.min(As.detach().clone().cpu().numpy(), axis=0))
         if opt.use_vis:
+            # opt.scale is NeRF A to NeRF B scale s_AB
             uu.visualize_points(torch.cat((As * opt.scale, Bs), 0), vis, 'keys', snum=len(Bs),
                                 title='Key Points')
         r = float(torch.norm(sample_ext[:3, 3] * opt.scale))
@@ -159,7 +174,8 @@ if __name__ == "__main__":
             loss.backward()
             optimizer1.step()
             optimizer1.zero_grad()
-        uu.write_log(writer, -1, obj_pc, R, t, 0, 0, 0, 0, T_gt, euler_gt, trans_gt, real=opt.real)
+        # uu.write_log(writer, -1, obj_pc, R, t, 0, 0, 0, 0, T_gt, euler_gt, trans_gt, real=opt.real)
+        uu.write_log(writer, -1, None, R, t, 0, 0, 0, 0, T_gt, euler_gt, trans_gt, real=opt.real)
         ########
         if opt.use_vis:
             uu.visualize_points(torch.cat((torch.matmul(opt.scale * As, R.transpose(0, 1)) + t, Bs), 0), vis,
@@ -180,8 +196,8 @@ if __name__ == "__main__":
             R = uu.make_rot_matrix(thetac, alphac, gammac)
             if time % opt.show_freq == 0 and time > 0:
                 uu.save_transform(R, t, root)
-                uu.show(writer, R, t, wrapper1, wrapper2, s1, focal, X, As, time, scale=opt.scale,
-                        image_size=opt.image_size, near=opt.near, far=opt.far, chunk=opt.chunk)
+                # uu.show(writer, R, t, wrapper1, wrapper2, s1, focal, X, As, time, scale=opt.scale,
+                #         image_size=opt.image_size, near=opt.near, far=opt.far, chunk=opt.chunk)
             W = torch.matmul((opt.scale) * X, R.transpose(0, 1)) + t
             moving_surface_values = wrapper2.get_surface_value(W, (opt.scale) * sigmas)
 
@@ -195,7 +211,8 @@ if __name__ == "__main__":
             optimizer.zero_grad()
 
             if time % opt.freq == 0 and time > 0:
-                uu.write_log(writer, time, obj_pc, R, t, loss, loss1, loss2, sigmas[0, 0], T_gt, euler_gt, trans_gt,
+                # uu.write_log(writer, time, obj_pc, R, t, loss, loss1, loss2, sigmas[0, 0], T_gt, euler_gt, trans_gt,
+                uu.write_log(writer, time, None, R, t, loss, loss1, loss2, sigmas[0, 0], T_gt, euler_gt, trans_gt,
                              real=opt.real)
                 c = adaptive.scale()[0].clone().detach().cpu().numpy()
                 w2 = 0.5 * (1 + np.cos(time * np.pi / opt.iters))  # Trigonometric additive cooling

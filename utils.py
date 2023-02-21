@@ -41,18 +41,18 @@ def write_log(writer, time, obj_pc, R, t, loss, loss1, loss2, sigma, T_gt, euler
         delta_rot = np.sum((d_euler) ** 2) ** (0.5)
         writer.add_scalar('delta rotation', delta_rot,
                           time)
-        obj_pc_ = np.concatenate((obj_pc.T, np.ones((1, obj_pc.shape[0]))), axis=0)
-        T_pred = np.block([[R.clone().detach().cpu().numpy(), t.clone().detach().cpu().numpy().T],
-                           [np.zeros((1, 3)), np.ones((1, 1))]])
-        gt_opc = (T_gt @ obj_pc_).T[:, :3]
-        pred_opc = (T_pred @ obj_pc_).T[:, :3]
-        distance = np.linalg.norm(gt_opc - pred_opc, axis=1)
-        mean_distance = np.mean(distance)
-        writer.add_scalar('3D-ADD', mean_distance, time)
+        # obj_pc_ = np.concatenate((obj_pc.T, np.ones((1, obj_pc.shape[0]))), axis=0)
+        # T_pred = np.block([[R.clone().detach().cpu().numpy(), t.clone().detach().cpu().numpy().T],
+        #                    [np.zeros((1, 3)), np.ones((1, 1))]])
+        # gt_opc = (T_gt @ obj_pc_).T[:, :3]
+        # pred_opc = (T_pred @ obj_pc_).T[:, :3]
+        # distance = np.linalg.norm(gt_opc - pred_opc, axis=1)
+        # mean_distance = np.mean(distance)
+        # writer.add_scalar('3D-ADD', mean_distance, time)
 
     if time % 1000 == 0:
         print("iteration:", time)
-        print("3D-ADD:", mean_distance)
+        # print("3D-ADD:", mean_distance)
         print("delta_translation:", delta_tr)
         print("delta_rotation:", delta_rot)
         print("smoothing sigma", sigma.item())
@@ -242,7 +242,7 @@ def show(writer, R, t, nerf1, nerf2, view, focal, samples, As, time, scale=1, im
     plt.savefig(buff, format='png')
     buff.seek(0)
     plt.show()
-    f.clear()
+    # f.clear()
     plt.close(f)
     image = PIL.Image.open(buff)
     image = ToTensor()(image)
@@ -370,6 +370,13 @@ def make_rot_matrix(thetac, alphac, gammac, device=torch.device('cuda')):
     R = (m1 @ m2 @ m3)
     return R
 
+def decompose_sim3(T):
+    """ T: 4x4 np array """
+    G = T.copy()
+    R = G[:3, :3]
+    s = np.linalg.det(R)**(1 / 3)
+    G[:3, :3] /= s
+    return G, s
 
 def generate_camera_point_spherical(r, theta=None, phi=None, phi_low=np.pi / 4, r_scale=1., z_offset=0.):
     phi_low = np.pi / 4 if phi_low is None else phi_low
@@ -421,6 +428,7 @@ def sample_cameras(file_p, num):  # farthest point sampling of the training came
     cp_list = list(camera_positions)
     sp_list = list(poses)
     cp_list.pop(index)
+    sp_list.pop(index)
     for i in range(num - 1):
         n = len(samples)
         m = len(cp_list)
@@ -436,7 +444,7 @@ def sample_cameras(file_p, num):  # farthest point sampling of the training came
         sp_list.pop(argmax)
     sample_poses = np.array(sample_poses)
 
-    return torch.tensor(sample_poses)  # [num, 3]
+    return torch.tensor(sample_poses)  # [num, 3, 4]
 
 
 def make_random_extrinsic(sample, r_scale=1, z_offset=0, phi_low=np.pi / 4):  # make a random view on the sphere

@@ -1,15 +1,26 @@
-import torch
-from PIL import Image
-import numpy as np
 import json
 import os
-from distill import Distilled_MLP
+
+import numpy as np
+import torch
+from nerfstudio.data.scene_box import SceneBox
+from PIL import Image
+
 import utils as uu
+from distill import Distilled_MLP
+from my_models import MyNerfactoModelConfig
 
 
 class NeRFWrapper():
-    def __init__(self, nerf_path, distilled_path):
-        self.nerf = torch.jit.load(nerf_path).cuda()
+    def __init__(self, nerf_path, distilled_path, model_type='jit'):
+        if model_type == 'jit':
+            self.nerf = torch.jit.load(nerf_path).cuda()
+        else:
+            state = torch.load(nerf_path, map_location='cuda')
+            state = {key[7:]: val for key, val in state['pipeline'].items() if key.startswith('_model')}
+            self.nerf = MyNerfactoModelConfig(eval_num_rays_per_chunk=1 << 15).setup(scene_box=SceneBox(aabb=state['field.aabb']), num_train_data=len(state['field.embedding_appearance.embedding.weight'])).cuda()
+            self.nerf.load_state_dict(state)
+            self.nerf.eval()
         self.L = 7
         self.distill = Distilled_MLP(6 * self.L + 3)
         self.distill.load_state_dict(torch.load(distilled_path))
