@@ -3,12 +3,14 @@ import os
 
 import numpy as np
 import torch
-from nerfstudio.data.scene_box import SceneBox
+# from nerfstudio.data.scene_box import SceneBox
 from PIL import Image
+# from tqdm import trange
 
 import utils as uu
 from distill import Distilled_MLP
-from my_models import MyNerfactoModelConfig
+
+# from my_models import MyNerfactoModelConfig
 
 
 class NeRFWrapper():
@@ -39,7 +41,7 @@ class NeRFWrapper():
         return rgb, density
 
     def query_density(self, positions):
-        direction_zeros = torch.zeros_like(positions).cuda() # [N, 3]
+        direction_zeros = torch.zeros_like(positions).cuda()  # [N, 3]
         _, density = self.query_nerf(positions, direction_zeros)
         return density
 
@@ -136,7 +138,7 @@ class NeRFWrapper():
         batch_count = torch.tensor(rays.shape[0] / chunk)
         batch_count = torch.ceil(batch_count).long()
 
-        for n in torch.arange(batch_count):
+        for n in range(batch_count):
             rgba_n, depth_n = self.nerf.trace_eval(  # coarse and fine sampling + render incorporated in nerf jit model
                 rays[n * chunk:(n + 1) * chunk].to(device),
                 torch.tensor(total_samples).to(device),
@@ -152,10 +154,10 @@ class NeRFWrapper():
         if save_p:
             image = rgb.cpu().numpy() * 255
             image = Image.fromarray(image.astype(np.uint8))
-            image.save(os.path.join(save_p, "rgb_" + str(index)))
-            data = {"transform_matrix": pose.clone().detach().cpu().numpy().tolist()}
-            with open(os.path.join(save_p, str(index) + ".json"), 'w') as outfile:
-                json.dump(data, outfile)
+            image.save(os.path.join(save_p, f'{index:03d}.png'))
+            # data = {"transform_matrix": pose.clone().detach().cpu().numpy().tolist()}
+            # with open(os.path.join(save_p, str(index) + ".json"), 'w') as outfile:
+            #     json.dump(data, outfile)
         return rgb[..., :3]
 
     def render_fast(self,
@@ -226,7 +228,7 @@ class NeRFWrapper():
 
             quantity = delta * density_n
 
-            cumsumex = lambda t: torch.cumsum(torch.cat(
+            def cumsumex(t): return torch.cumsum(torch.cat(
                 [torch.zeros_like(t[..., :1]), t[..., :-1]], axis=-1),
                 axis=-1)
             transmittance = torch.exp(cumsumex(-quantity))[..., None]

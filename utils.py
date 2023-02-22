@@ -53,8 +53,8 @@ def write_log(writer, time, obj_pc, R, t, loss, loss1, loss2, sigma, T_gt, euler
     if time % 1000 == 0:
         print("iteration:", time)
         # print("3D-ADD:", mean_distance)
-        print("delta_translation:", delta_tr)
-        print("delta_rotation:", delta_rot)
+        # print("delta_translation:", delta_tr)
+        # print("delta_rotation:", delta_rot)
         print("smoothing sigma", sigma.item())
 
 
@@ -138,9 +138,9 @@ def render_fused_image(nerf1, nerf2,  # z-fighting overlay of two nerfs
         rgb_n2 = rgb_n2.reshape(chunk, depths.shape[1], 3)
 
         rgb_n1[:, :, 0], rgb_n1[:, :, 1], rgb_n1[:, :, 2] = (0.8 * 176 / 255. + 0.2 * rgb_n1[:, :, 0]), (
-                0.8 * 164 / 255 + 0.2 * rgb_n1[:, :, 1]), (0.8 * 101 / 255 + 0.2 * rgb_n1[:, :, 2])
+            0.8 * 164 / 255 + 0.2 * rgb_n1[:, :, 1]), (0.8 * 101 / 255 + 0.2 * rgb_n1[:, :, 2])
         rgb_n2[:, :, 0], rgb_n2[:, :, 1], rgb_n2[:, :, 2] = (0.8 * 90 / 255 + 0.2 * rgb_n2[:, :, 0]), (
-                0.8 * 115 / 255 + 0.2 * rgb_n2[:, :, 1]), (0.8 * 151 / 255 + 0.2 * rgb_n2[:, :, 2])
+            0.8 * 115 / 255 + 0.2 * rgb_n2[:, :, 1]), (0.8 * 151 / 255 + 0.2 * rgb_n2[:, :, 2])
 
         density_fused = torch.maximum(density_n1, density_n2)
 
@@ -153,7 +153,7 @@ def render_fused_image(nerf1, nerf2,  # z-fighting overlay of two nerfs
 
         quantity = delta * density_fused
 
-        cumsumex = lambda t: torch.cumsum(torch.cat(
+        def cumsumex(t): return torch.cumsum(torch.cat(
             [torch.zeros_like(t[..., :1]), t[..., :-1]], axis=-1),
             axis=-1)
         transmittance = torch.exp(cumsumex(-quantity))[..., None]
@@ -165,7 +165,7 @@ def render_fused_image(nerf1, nerf2,  # z-fighting overlay of two nerfs
 
         quantity1 = delta * density_n1
 
-        cumsumex = lambda t: torch.cumsum(torch.cat(
+        def cumsumex(t): return torch.cumsum(torch.cat(
             [torch.zeros_like(t[..., :1]), t[..., :-1]], axis=-1),
             axis=-1)
         transmittance1 = torch.exp(cumsumex(-quantity1))[..., None]
@@ -176,7 +176,7 @@ def render_fused_image(nerf1, nerf2,  # z-fighting overlay of two nerfs
 
         quantity2 = delta * density_n2
 
-        cumsumex = lambda t: torch.cumsum(torch.cat(
+        def cumsumex(t): return torch.cumsum(torch.cat(
             [torch.zeros_like(t[..., :1]), t[..., :-1]], axis=-1),
             axis=-1)
         transmittance2 = torch.exp(cumsumex(-quantity2))[..., None]
@@ -370,6 +370,7 @@ def make_rot_matrix(thetac, alphac, gammac, device=torch.device('cuda')):
     R = (m1 @ m2 @ m3)
     return R
 
+
 def decompose_sim3(T):
     """ T: 4x4 np array """
     G = T.copy()
@@ -377,6 +378,70 @@ def decompose_sim3(T):
     s = np.linalg.det(R)**(1 / 3)
     G[:3, :3] /= s
     return G, s
+
+
+def gen_lookat_pose(c, t, u=None, pose_spec=2, pose_type='c2w'):
+    """ generates a c2w pose
+        c: camera center
+        t: target to look at
+        u: up vector
+        pose_spec: cam frame spec
+                0: x->right, y->front, z->up
+                1: x->right, y->down, z->front
+                2: x->right, y->up, z->back
+        we assume world frame spec is 0
+        pose_type: one of {'c2w', 'w2c'} """
+    def cross(a, b) -> np.ndarray:
+        return np.cross(a, b)
+    if u is None:
+        u = np.array([0, 0, 1])
+    y = t - c
+    y = y / np.linalg.norm(y)
+    x = cross(y, u)
+    x = x / np.linalg.norm(x)
+    z = cross(x, y)
+    R = np.array([x, y, z]).T
+    if pose_spec == 1:
+        R = R @ np.array([[1, 0, 0],
+                         [0, 0, 1],
+                          [0, -1, 0]])
+    elif pose_spec == 2:
+        R = R @ np.array([[1, 0, 0],
+                         [0, 0, -1],
+                          [0, 1, 0]])
+    if pose_type == 'w2c':
+        R = R.T
+        c = -R @ c
+    return np.concatenate((R, c[:, None]), axis=1, dtype=np.float32)
+
+
+def gen_elliptical_poses(a, b, theta, h, target=np.zeros(3), n=10, pose_spec=2):
+    """ generate n poses (c2w) distributed along an ellipse of (a, b, theta) at height h"""
+    poses = []
+    for alpha in np.linspace(0, np.pi * 2, num=n, endpoint=False):
+        x0 = a * np.cos(alpha)
+        y0 = b * np.sin(alpha)
+        x = x0 * np.cos(theta) - y0 * np.sin(theta)
+        y = y0 * np.cos(theta) + x0 * np.sin(theta)
+        z = h
+        poses.append(gen_lookat_pose(np.array([x, y, z]), target, pose_spec=pose_spec))
+    return poses
+
+
+def gen_circular_poses(r, h, target=np.zeros(3), n=10, pose_spec=2):
+    """ generate n poses (c2w) distributed along a circle of radius r at height h"""
+    return gen_elliptical_poses(r, r, 0, h, target=target, n=n, pose_spec=pose_spec)
+
+
+def gen_hemispherical_poses(r, gamma_lo, gamma_hi=None, target=np.zeros(3), m=3, n=10, pose_spec=2):
+    if gamma_hi is None:
+        gamma_hi = gamma_lo
+        gamma_lo = 0
+    c2ws = []
+    for g in np.linspace(gamma_lo, gamma_hi, num=m):
+        c2ws.extend(gen_circular_poses(r * np.cos(g), r * np.sin(g), target=target, n=n, pose_spec=pose_spec))
+    return c2ws
+
 
 def generate_camera_point_spherical(r, theta=None, phi=None, phi_low=np.pi / 4, r_scale=1., z_offset=0.):
     phi_low = np.pi / 4 if phi_low is None else phi_low

@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import PIL.Image
 import torch
-from nerfstudio.data.scene_box import SceneBox
+# from nerfstudio.data.scene_box import SceneBox
 from torch.nn import Linear, Module, MSELoss, ReLU, Sigmoid
 from torch.optim import Adam
 from torch.utils.tensorboard import SummaryWriter
@@ -15,7 +15,8 @@ from torchvision.transforms import ToTensor
 from tqdm import trange
 
 import utils as uu
-from my_models import MyNerfactoModelConfig
+
+# from my_models import MyNerfactoModelConfig
 
 
 def get_focal(file, resolution=(512, 512)):
