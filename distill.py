@@ -352,7 +352,7 @@ if __name__ == "__main__":
         bounds_range = torch.tensor([2.0, 2.0, 2.0])
 
     data_path = os.path.join(root, args.a_or_b, 'data.pt')
-    if args.step == 0:
+    if args.step in [0, 2]:
         print("Gathering dataset...")
         with torch.no_grad():
             for i in trange(iters):
@@ -388,7 +388,7 @@ if __name__ == "__main__":
             sigmas = sigmas[idx]
             torch.save({'probs': probs, 'xs': xs, 'sigmas': sigmas}, data_path)
         print("Data collection finished.")
-    else:
+    if args.step in [1, 2]:
         data = torch.load(data_path)
         probs = data['probs']
         xs = data['xs']
@@ -423,6 +423,6 @@ if __name__ == "__main__":
                 torch.save(model.state_dict(), os.path.join(root, args.a_or_b, "distilled_" + args.a_or_b + ".ckpt"))
 
                 # adjust sigma and level
-                show_pred_image(torch.tensor([[0.0, 0.0, 0.0]]).float().to(device), level, top_view, focal, L, model)
-                if i == 0:
-                    show_gt_image(torch.tensor([[0.0, 0.0, 0.0]]).float().to(device), teacher_net, level, cameras)
+                # show_pred_image(torch.tensor([[0.0, 0.0, 0.0]]).float().to(device), level, top_view, focal, L, model)
+                # if i == 0:
+                #     show_gt_image(torch.tensor([[0.0, 0.0, 0.0]]).float().to(device), teacher_net, level, cameras)
