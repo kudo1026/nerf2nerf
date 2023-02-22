@@ -12,8 +12,9 @@ logs_dir = slurm_data_dir / f'logs/n2n-{datetime.now().strftime("%m.%d_%H:%M:%S"
 scripts_dir = Path('scripts/render')
 sif_path = Path('/share/data/ripl/fjd/singularity_images/n2n_latest.sif')
 os.makedirs(scripts_dir, exist_ok=True)
+obj = 'max_planck'
 
-with open(scripts_dir / 'max_planck.sh', 'w') as f1:
+with open(scripts_dir / f'{obj}.sh', 'w') as f1:
     f1.write(f'mkdir -p {logs_dir}\n\n')
     for split in ['a', 'b']:
         for i in range(48):
@@ -22,7 +23,9 @@ with open(scripts_dir / 'max_planck.sh', 'w') as f1:
                 f2.write(f'cd {local_project_dir}/\n\n')
                 f2.writelines([
                     'python3 render.py \\\n',
-                    f'\t--a_or_b {split} \\\n',
+                    f'\t--obj {obj} \\\n',
+                    f'\t--layout {split} \\\n',
+                    f'\t--rel_trans gt \\\n',
                     f'\t--i {i} \\\n',
                     '\n',
                 ])
