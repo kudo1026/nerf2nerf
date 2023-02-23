@@ -15,11 +15,13 @@ from nerf_wrapper import NeRFWrapper
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('-y', '--yaml', default='table_no_vis')
+    parser.add_argument('-y', '--yaml', default='max_planck')
+    parser.add_argument('--no-vis', action='store_true')
     args = parser.parse_args()
     with open(os.path.join(os.getcwd(), 'options', args.yaml + ".yaml"), "r") as f:
         opt = uu.AttributeDict(yaml.load(f, Loader=yaml.FullLoader))
-
+    if args.no_vis:
+        opt.use_vis = False
     np.random.seed(seed=10)
     root = os.path.join(os.getcwd(), "scenes", "scene_" + str(opt.scene_no))
     writer = SummaryWriter(comment='views')
