@@ -5,7 +5,7 @@ import numpy as np
 import torch
 # from nerfstudio.data.scene_box import SceneBox
 from PIL import Image
-# from tqdm import trange
+from tqdm import trange
 
 import utils as uu
 from distill import Distilled_MLP
@@ -138,7 +138,7 @@ class NeRFWrapper():
         batch_count = torch.tensor(rays.shape[0] / chunk)
         batch_count = torch.ceil(batch_count).long()
 
-        for n in range(batch_count):
+        for n in trange(batch_count):
             rgba_n, depth_n = self.nerf.trace_eval(  # coarse and fine sampling + render incorporated in nerf jit model
                 rays[n * chunk:(n + 1) * chunk].to(device),
                 torch.tensor(total_samples).to(device),
