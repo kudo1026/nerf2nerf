@@ -197,7 +197,7 @@ if __name__ == "__main__":
         for time in range(opt.iters + 1):
             R = uu.make_rot_matrix(thetac, alphac, gammac)
             if time % opt.show_freq == 0 and time > 0:
-                uu.save_transform(R, t, root)
+                uu.save_transform(R, t, root, args.yaml)
                 # uu.show(writer, R, t, wrapper1, wrapper2, s1, focal, X, As, time, scale=opt.scale,
                 #         image_size=opt.image_size, near=opt.near, far=opt.far, chunk=opt.chunk)
             W = torch.matmul((opt.scale) * X, R.transpose(0, 1)) + t

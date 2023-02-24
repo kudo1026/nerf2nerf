@@ -58,11 +58,11 @@ def write_log(writer, time, obj_pc, R, t, loss, loss1, loss2, sigma, T_gt, euler
         print("smoothing sigma", sigma.item())
 
 
-def save_transform(R, t, root):
+def save_transform(R, t, root, obj):
     path = os.path.join(root, 'output')
     if not os.path.isdir(path):
         os.makedirs(path)
-    with open(os.path.join(path, 'output_transform.npy'), 'wb') as f:
+    with open(os.path.join(path, f'{obj}.npy'), 'wb') as f:
         output_transform = torch.cat([R, t.squeeze(0)[..., None]], dim=-1).detach().clone().cpu().numpy()
         np.save(f, output_transform)
 
